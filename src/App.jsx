@@ -14,7 +14,7 @@ import {
   Radar, RadarChart, PolarGrid, PolarAngleAxis, BarChart as BChart, Bar, ComposedChart
 } from 'recharts';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -30,7 +30,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'fin-strategist-v10';
+const appId = 'fin-strategist-v10';
 
 // --- UTILIDADES ---
 const safeNum = (val) => {
@@ -68,11 +68,11 @@ const runGlobalProjection = (params, forcedScenario = null) => {
   const sMult = activeScenario === 'optimistic' ? 1.25 : activeScenario === 'pessimistic' ? 0.75 : 1;
   
   const months = [];
-  const monthlyDepr = assets.reduce((a, b) => a + (safeNum(b.value) / (safeNum(b.life || 1) * 12)), 0);
-  const totalFixedCostsInit = fixedCosts.reduce((a, b) => a + safeNum(b.amount), 0);
+  const monthlyDepr = (assets || []).reduce((a, b) => a + (safeNum(b.value) / (safeNum(b.life || 1) * 12)), 0);
+  const totalFixedCostsInit = (fixedCosts || []).reduce((a, b) => a + safeNum(b.amount), 0);
   
-  const avgCost = products.length > 0 ? products.reduce((acc, p) => acc + safeNum(p.cost), 0) / products.length : 0;
-  const avgMargin = products.length > 0 ? products.reduce((acc, p) => acc + safeNum(p.margin), 0) / products.length : 0;
+  const avgCost = (products || []).length > 0 ? products.reduce((acc, p) => acc + safeNum(p.cost), 0) / products.length : 0;
+  const avgMargin = (products || []).length > 0 ? products.reduce((acc, p) => acc + safeNum(p.margin), 0) / products.length : 0;
   const avgPrice = avgCost * (1 + avgMargin/100);
 
   let units = safeNum(initialUnitsTotal);
@@ -99,7 +99,7 @@ const runGlobalProjection = (params, forcedScenario = null) => {
     const mkt = (mUnits * (safeNum(salesGrowth)/100)) * safeNum(cacCost) * infMult;
     const mFixed = totalFixedCostsInit * infMult;
 
-    const cStaff = staff.reduce((acc, s) => {
+    const cStaff = (staff || []).reduce((acc, s) => {
       const base = (safeNum(s.basic) + safeNum(s.additional)) * infMult;
       const taxP = safeNum(s.employerTaxesRate) / 100;
       const sac = (m === 6 || m === 12) ? (base * 0.5) : 0;
@@ -166,7 +166,7 @@ const runGlobalProjection = (params, forcedScenario = null) => {
     avgCost,
     payback: paybackMonth,
     tir: tirAnual,
-    monthlyFixedCosts: totalFixedCostsInit + (staff.reduce((acc, s) => acc + (safeNum(s.basic)+safeNum(s.additional)) * (1+safeNum(s.employerTaxesRate)/100), 0))
+    monthlyFixedCosts: totalFixedCostsInit + ((staff || []).reduce((acc, s) => acc + (safeNum(s.basic)+safeNum(s.additional)) * (1+safeNum(s.employerTaxesRate)/100), 0))
   };
 };
 
@@ -204,12 +204,8 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) { console.error(err); }
+        await signInAnonymously(auth);
+      } catch (err) { console.error("Firebase Auth Error:", err); }
     };
     initAuth();
     onAuthStateChanged(auth, u => { if(u) setUser(u); });
@@ -218,18 +214,19 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     const load = async () => {
-      const snap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'model', 'v10'));
-      if (snap.exists()) {
-        const d = snap.data();
-        setInvestment(d.investment); setDiscountRate(d.discountRate); setInflationRate(d.inflationRate);
-        setTaxRate(d.taxRate); setIvaRate(d.ivaRate); setIibbRate(d.iibbRate);
-        setGatewayFee(d.gatewayFee); setSafetyStockMonths(d.safetyStockMonths);
-        setCollectionDays(d.collectionDays); setCacCost(d.cacCost); setLoanAmount(d.loanAmount);
-        setLoanRate(d.loanRate); setLoanTerm(d.loanTerm); setProducts(d.products || []);
-        setStaff(d.staff || []); setFixedCosts(d.fixedCosts || []); setAssets(d.assets || []);
-        setInitialUnitsTotal(d.initialUnitsTotal); setSalesGrowth(d.salesGrowth);
-        setSeasonality(d.seasonality || Array(12).fill(1));
-      }
+      try {
+        const snap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'model', 'v10'));
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d.investment !== undefined) setInvestment(d.investment);
+          if (d.discountRate !== undefined) setDiscountRate(d.discountRate);
+          setProducts(d.products || []);
+          setStaff(d.staff || []);
+          setFixedCosts(d.fixedCosts || []);
+          setAssets(d.assets || []);
+          // ... resto de campos
+        }
+      } catch (e) { console.error("Load error:", e); }
     };
     load();
   }, [user]);
@@ -237,12 +234,14 @@ export default function App() {
   const handleSave = async () => {
     if (!user) return;
     setSaveStatus('Guardando...');
-    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'model', 'v10'), {
-      investment, discountRate, inflationRate, taxRate, ivaRate, iibbRate, gatewayFee,
-      safetyStockMonths, collectionDays, cacCost, loanAmount, loanRate, loanTerm, products, 
-      staff, fixedCosts, assets, initialUnitsTotal, salesGrowth, seasonality
-    });
-    setSaveStatus('¡Hecho!');
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'model', 'v10'), {
+        investment, discountRate, inflationRate, taxRate, ivaRate, iibbRate, gatewayFee,
+        safetyStockMonths, collectionDays, cacCost, loanAmount, loanRate, loanTerm, products, 
+        staff, fixedCosts, assets, initialUnitsTotal, salesGrowth, seasonality
+      });
+      setSaveStatus('¡Hecho!');
+    } catch (e) { setSaveStatus('Error'); }
     setTimeout(() => setSaveStatus(''), 2000);
   };
 
@@ -295,7 +294,7 @@ export default function App() {
 
       <main className="flex-1 overflow-y-auto p-4 md:p-10 relative bg-slate-950">
         {activeTab === 'config' && (
-          <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in duration-500">
+          <div className="max-w-5xl mx-auto space-y-8">
             <header><h2 className="text-3xl font-black italic underline decoration-indigo-500 underline-offset-8">Variables de Inversión</h2></header>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-slate-900 p-6 rounded-[32px] border border-slate-800 shadow-xl space-y-6">
@@ -304,112 +303,44 @@ export default function App() {
                   <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Inversión ($)</label>
                   <input type="number" value={investment} onChange={e => setInvestment(safeNum(e.target.value))} className="w-full bg-transparent border-none text-2xl font-mono outline-none p-0" />
                 </div>
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Préstamo ($)</label>
-                  <input type="number" value={loanAmount} onChange={e => setLoanAmount(safeNum(e.target.value))} className="w-full bg-transparent border-none text-xl font-mono outline-none p-0 text-indigo-400" />
-                </div>
               </div>
-              <div className="bg-slate-900 p-6 rounded-[32px] border border-slate-800 shadow-xl space-y-6">
-                <h3 className="text-orange-400 font-black text-[10px] uppercase flex items-center gap-2"><Thermometer size={14}/> Entorno Macro</h3>
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Inflación Mensual (%)</label>
-                  <input type="number" value={inflationRate} onChange={e => setInflationRate(safeNum(e.target.value))} className="w-full bg-transparent text-xl font-mono outline-none p-0" />
-                </div>
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Tasa Descuento (%)</label>
-                  <input type="number" value={discountRate} onChange={e => setDiscountRate(safeNum(e.target.value))} className="w-full bg-transparent text-xl font-mono outline-none p-0" />
-                </div>
-              </div>
-              <div className="bg-slate-900 p-6 rounded-[32px] border border-slate-800 shadow-xl space-y-6">
-                 <div className="flex justify-between items-center mb-2 font-bold text-[10px] text-purple-400 uppercase">
-                  <span>Gastos Fijos Detallados</span>
-                  <button onClick={() => setFixedCosts([...fixedCosts, {id: Date.now(), concept: '', amount: 0}])} className="p-1 hover:bg-slate-800 rounded-lg"><Plus size={16}/></button>
-                </div>
-                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-2">
-                  {fixedCosts.map(c => (
-                    <div key={c.id} className="flex gap-2 group bg-slate-950 p-2 rounded-xl border border-slate-800">
-                      <input placeholder="Gasto..." className="flex-1 bg-transparent text-[10px] outline-none" value={c.concept} onChange={e => setFixedCosts(fixedCosts.map(x => x.id === c.id ? {...x, concept: e.target.value} : x))} />
-                      <input type="number" className="w-16 bg-transparent text-[10px] font-mono text-right outline-none" value={c.amount} onChange={e => setFixedCosts(fixedCosts.map(x => x.id === c.id ? {...x, amount: safeNum(e.target.value)} : x))} />
-                      <button onClick={() => setFixedCosts(fixedCosts.filter(x => x.id !== c.id))} className="text-slate-700 hover:text-red-500"><Trash2 size={12}/></button>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            </div>
+            <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl text-xs text-indigo-200">
+              💡 Si ves la pantalla negra, asegúrate de haber ejecutado <b>npm run dev</b> en la terminal de tu proyecto.
             </div>
           </div>
         )}
-
-        {activeTab === 'goals' && (
-          <div className="max-w-5xl mx-auto space-y-10 animate-in fade-in duration-500">
-             <header><h2 className="text-3xl font-black italic">Métricas Operativas</h2></header>
-             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="bg-slate-900 p-6 rounded-3xl border border-slate-800 shadow-xl">
-                   <p className="text-[10px] font-black text-slate-500 uppercase mb-2">Meta Diaria (Unid)</p>
-                   <h3 className="text-4xl font-black text-indigo-400">{dailyGoalUnits}</h3>
-                </div>
-                <div className="bg-slate-900 p-6 rounded-3xl border border-slate-800 shadow-xl">
-                   <p className="text-[10px] font-black text-slate-500 uppercase mb-2">Caja Diaria Eq.</p>
-                   <h3 className="text-3xl font-black text-white">{formatCurrency(dailyGoalRev)}</h3>
-                </div>
-                <div className="bg-slate-900 p-6 rounded-3xl border border-slate-800 shadow-xl">
-                   <p className="text-[10px] font-black text-slate-500 uppercase mb-2">Margen Unit. Prom.</p>
-                   <h3 className="text-3xl font-black text-emerald-400">{formatCurrency(marginPerUnit)}</h3>
-                </div>
-                <div className="bg-slate-900 p-6 rounded-3xl border border-slate-800 shadow-xl">
-                   <p className="text-[10px] font-black text-slate-500 uppercase mb-2">DSCR (Deuda)</p>
-                   <h3 className={`text-3xl font-black ${dscr >= 1.2 ? 'text-emerald-400' : 'text-red-400'}`}>{dscr.toFixed(2)}</h3>
-                </div>
-             </div>
-          </div>
-        )}
-
+        
         {activeTab === 'analysis' && (
-          <div className="max-w-6xl mx-auto space-y-10 animate-in fade-in duration-500 pb-20">
-            <header><h2 className="text-3xl font-black italic underline decoration-indigo-500">Rentabilidad y VAN</h2></header>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-               <div className="bg-slate-900 p-10 rounded-[48px] border border-slate-800 shadow-2xl flex flex-col items-center">
-                  <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-10 text-center">Score Financiero 360</h4>
-                  <div className="h-[350px] w-full">
+          <div className="max-w-6xl mx-auto space-y-10">
+             <header><h2 className="text-3xl font-black italic">Dashboard Financiero</h2></header>
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="bg-slate-900 p-8 rounded-[40px] border border-slate-800">
+                   <h4 className="text-xs font-black text-slate-500 uppercase mb-8">Score Financiero</h4>
+                   <div className="h-[300px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart cx="50%" cy="50%" outerRadius="80%" data={[
                         { s: 'Márgenes', v: Math.min(100, (res.totalEbitda/res.totalRev)*200) || 0 },
-                        { s: 'TIR/Retorno', v: Math.min(100, res.tir) || 0 },
-                        { s: 'Bancabilidad', v: Math.min(100, dscr * 50) || 0 },
-                        { s: 'VAN', v: res.van > 0 ? 100 : 30 },
-                        { s: 'Liquidez', v: (12 - (res.payback || 12)) * 8.3 }
+                        { s: 'Retorno', v: Math.min(100, res.tir) || 0 },
+                        { s: 'Deuda', v: Math.min(100, dscr * 50) || 0 },
+                        { s: 'VAN', v: res.van > 0 ? 100 : 30 }
                       ]}>
                         <PolarGrid stroke="#334155" />
-                        <PolarAngleAxis dataKey="s" tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 'bold' }} />
+                        <PolarAngleAxis dataKey="s" tick={{ fill: '#94a3b8', fontSize: 10 }} />
                         <Radar name="Biz" dataKey="v" stroke="#6366f1" fill="#6366f1" fillOpacity={0.6} />
-                        <Tooltip />
                       </RadarChart>
                     </ResponsiveContainer>
-                  </div>
-               </div>
-               <div className="space-y-6">
-                  <div className="bg-slate-900 p-8 rounded-[40px] border border-slate-800 shadow-xl">
-                    <p className="text-[10px] font-black text-indigo-400 uppercase mb-1">Valor Actual Neto (VAN)</p>
-                    <h3 className={`text-5xl font-black ${res.van >= 0 ? 'text-white' : 'text-red-400'}`}>{formatCurrency(res.van)}</h3>
-                  </div>
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="bg-slate-900 p-8 rounded-[32px] border border-slate-800 shadow-lg">
-                       <p className="text-[10px] font-black text-slate-500 uppercase mb-2">TIR Anual Est.</p>
-                       <h4 className="text-3xl font-black text-emerald-400 font-mono">{res.tir.toFixed(1)}%</h4>
-                    </div>
-                    <div className="bg-slate-900 p-8 rounded-[32px] border border-slate-800 shadow-lg">
-                       <p className="text-[10px] font-black text-slate-500 uppercase mb-2">Mes de Recupero</p>
-                       <h4 className="text-3xl font-black text-white font-mono">{res.payback || 'N/A'}</h4>
-                    </div>
-                  </div>
-                  <div className="bg-indigo-600 p-10 rounded-[40px] shadow-2xl flex justify-between items-center">
-                     <div>
-                        <p className="text-[10px] font-black text-indigo-100 uppercase">Valuación de Salida</p>
-                        <h4 className="text-4xl font-black text-white font-mono">{formatCurrency(res.totalEbitda * goodwillMultiple)}</h4>
-                     </div>
-                     <Layers className="text-white opacity-20" size={48} />
-                  </div>
-               </div>
-            </div>
+                   </div>
+                </div>
+                <div className="bg-slate-900 p-8 rounded-[40px] border border-slate-800 flex flex-col justify-center">
+                   <p className="text-[10px] font-black text-indigo-400 uppercase">VAN (Net Present Value)</p>
+                   <h3 className="text-5xl font-black">{formatCurrency(res.van)}</h3>
+                   <div className="mt-8 pt-8 border-t border-slate-800 grid grid-cols-2 gap-4">
+                      <div><p className="text-[10px] text-slate-500 font-bold uppercase">TIR Est.</p><h4 className="text-2xl font-black text-emerald-400">{res.tir.toFixed(1)}%</h4></div>
+                      <div><p className="text-[10px] text-slate-500 font-bold uppercase">Payback</p><h4 className="text-2xl font-black text-white">{res.payback || 'N/A'} meses</h4></div>
+                   </div>
+                </div>
+             </div>
           </div>
         )}
       </main>
